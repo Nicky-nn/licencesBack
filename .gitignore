@@ -1,0 +1,31 @@
+# Dependencias
+node_modules/
+
+# Archivos de compilación
+dist/
+
+# Archivos de entorno
+.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Directorios de caché
+.npm
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de IDE
+.vscode/
+.idea/
+
+# Otros
+*.swp
+*.swo
+
+structure.sh
+pnpm-lock.yaml

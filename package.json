@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-bot-multiuser",
+  "name": "crm_server_license",
   "version": "1.0.0",
-  "description": "A scalable WhatsApp bot system with multi-user support",
+  "description": "CRM Server License",
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
@@ -17,7 +17,7 @@
     "graphql",
     "typescript"
   ],
-  "author": "Your Name",
+  "author": "Nick Russell",
   "license": "MIT",
   "dependencies": {
     "@graphql-tools/load-files": "^7.0.0",
@@ -37,6 +37,7 @@
     "googleapis": "^144.0.0",
     "graphql": "^16.9.0",
     "graphql-subscriptions": "^2.0.0",
+    "graphql-upload": "^17.0.0",
     "graphql-ws": "^5.16.0",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.1",
@@ -50,6 +51,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/express-serve-static-core": "^4.17.41",
+    "@types/graphql-upload": "^16.0.7",
     "@types/jest": "^29.5.12",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.11.30",

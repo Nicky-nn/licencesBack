@@ -16,16 +16,37 @@ import { verifyToken } from '../utils/verifyToken';
 
 export const configureServer = async () => {
   const app: Express = express();
-  const httpServer = createServer(app);
 
-  const pubsub = new PubSub();
+  // Importar los módulos de graphql-upload dinámicamente
+  const [{ default: GraphQLUpload }, { default: graphqlUploadExpress }] =
+    await Promise.all([
+      import('graphql-upload/GraphQLUpload.mjs'),
+      import('graphql-upload/graphqlUploadExpress.mjs'),
+    ]);
+
+  // Configurar middleware de upload
+  app.use(
+    graphqlUploadExpress({
+      maxFileSize: 1024 * 1024 * 1024, // 1GB
+      maxFiles: 20, // 20 archivos
+    }),
+  );
+
+  const httpServer = createServer(app); // Crear servidor HTTP
+  const pubsub = new PubSub(); // Crear instancia de PubSub
+
+  // Agregar Upload scalar a los resolvers
+  const resolversWithUpload = {
+    ...resolvers,
+    Upload: GraphQLUpload,
+  }; // Agregar Upload scalar a los resolvers
 
   const schema = authDirectiveTransformer(
     makeExecutableSchema({
       typeDefs: [typeDefs, authDirectiveTypeDefs],
-      resolvers,
+      resolvers: resolversWithUpload,
     }),
-  );
+  ); // Crear el esquema de GraphQL
 
   const apolloServer = new ApolloServer({
     schema,
@@ -34,12 +55,11 @@ export const configureServer = async () => {
       token: req.headers.authorization,
       pubsub,
     }),
-  });
+  }); // Crear instancia de ApolloServer
 
   await apolloServer.start();
   apolloServer.applyMiddleware({ app, path: '/graphql' });
 
-  // Configuración para graphql-ws
   const wsServer = new WebSocketServer({
     server: httpServer,
     path: '/graphql',
@@ -73,8 +93,10 @@ export const configureServer = async () => {
     },
     wsServer,
   );
+
   wsServer.on('error', (error) => {
     console.error('Error en el servidor WebSocket:', error);
   });
+
   return { app, httpServer, apolloServer, wsServer, serverCleanup };
 };

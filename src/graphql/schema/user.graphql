@@ -1,85 +1,116 @@
+scalar Upload
+
 type Usuario {
   id: ID!
+  urlImagen: String
   nombre: String!
-  apellido: String
+  apellido: String!
   email: String!
-  rol: Rol!
-  estado: EstadoUsuario!
-  empresa: Empresa
+  password: String!
   telefono: String
-  identificadorTelefono: String
-  usuCre: ID
-  fechaCre: String
-  usuMod: ID
-  fechaMod: String
+  rol: RolUsuario!
+  estado: EstadoUsuario!
+  creditos: Int!
+  empresas: [Empresa!]
+  productos: [Producto!]
 }
 
-type Empresa {
-  id: ID!
-  nombre: String!
-  usuarios: [Usuario!]!
-  urlImge: String
-}
-
-type CrearAdminResult {
-  success: Boolean!
-  message: String!
-  usuario: Usuario
-}
-
-type VerificacionOTPResult {
-  success: Boolean!
-  message: String!
-  usuario: Usuario
-}
-
-input ActualizarAdminInput {
-  nombre: String
-  apellido: String
-  email: String
-  empresaId: ID
-}
-
-type ActualizarAdminResponse {
-  success: Boolean!
-  message: String!
-  usuario: Usuario
-}
-
-enum Rol {
+enum RolUsuario {
   SUPER_ADMIN
   ADMIN
-  NORMAL
+  CLIENTE
 }
 
 enum EstadoUsuario {
   ACTIVO
   INACTIVO
-  PENDIENTE
 }
 
-type Token {
-  token: String!
-  usuario: Usuario!
+enum CargoEmpresa {
+  ADMIN_EMPRESA
+  EMPLEADO
 }
 
-input CrearUsuarioNormalInput {
+type Empresa {
+  _id: ID!
   nombre: String!
-  apellido: String
+  correo: String!
+  direccion: String
+  urlImagen: String
+  usuarios: [UsuarioEnEmpresa!]
+  productos: [Producto!]
+  createdAt: String!
+  updatedAt: String!
+  usucreAt: String!
+  usuactAt: String!
+}
+
+type UsuarioEnEmpresa {
+  usuario: String!
+  cargo: CargoEmpresa!
+}
+
+type Producto {
+  id: ID!
+  nombre: String!
+  reglas: [String!]!
+  imagen: String
+  clave: String!
+  version: String!
+  archivo: String
+  plataforma: [Plataforma!]!
+  hash: String!
+  maxConexiones: Int!
+  correoAsociado: String!
+  idUnico: String!
+  versionesAnteriores: [VersionProducto!]
+  clientes: [Cliente!]
+  empresa: Empresa
+}
+
+enum Plataforma {
+  WINDOWS
+  MAC
+  LINUX
+  IOS
+  ANDROID
+}
+
+type VersionProducto {
+  version: String!
+  fechaCreacion: String!
+  cambios: String
+}
+
+type Cliente {
+  id: ID!
+  email: String!
+  password: String!
+  productos: [Producto!]
+  dispositivos: [Dispositivo!]
+}
+
+type Dispositivo {
+  id: ID!
+  macAddress: String!
+  ipAddress: String!
+  ultimaConexion: String!
+}
+
+type Notificacion {
+  id: ID!
+  mensaje: String!
+  fecha: String!
+}
+
+input CrearUsuarioInput {
+  nombre: String!
+  apellido: String!
   email: String!
   password: String!
   telefono: String!
-  rol: Rol!
-  empresaId: ID
-}
-
-input CrearAdminInput {
-  nombre: String!
-  apellido: String
-  email: String!
-  password: String!
-  telefono: String!
-  empresaId: ID
+  rol: RolUsuario!
+  urlImagen: String
 }
 
 input ActualizarUsuarioInput {
@@ -88,14 +119,74 @@ input ActualizarUsuarioInput {
   email: String
   password: String
   telefono: String
+}
+
+input CrearEmpresaInput {
+  nombre: String!
+  direccion: String
+  correo: String!
+}
+
+input ActualizarEmpresaInput {
+  nombre: String
+  direccion: String
+  urlImagen: String
+}
+
+input EliminarUsuariosEmpresaInput {
+  usuarios: [ID!]!
+}
+
+input CrearProductoInput {
+  nombre: String!
+  reglas: [String!]!
+  imagen: Upload
+  clave: String!
+  version: String!
+  archivo: Upload
+  plataforma: [Plataforma!]!
+  maxConexiones: Int!
+  correoAsociado: String!
   empresaId: ID
 }
 
-input QueryInput {
-  telefono: String
+input ActualizarProductoInput {
   nombre: String
-  apellido: String
-  correo: String
+  reglas: [String!]
+  imagen: Upload
+  clave: String
+  version: String
+  archivo: Upload
+  plataforma: [Plataforma!]
+  maxConexiones: Int
+  correoAsociado: String
+}
+
+input RegistrarClienteInput {
+  email: String!
+  password: String!
+  productoId: ID!
+}
+
+input DispositivoInput {
+  macAddress: String!
+  ipAddress: String!
+}
+
+type AuthResponse {
+  token: String!
+  usuario: Usuario!
+}
+
+type AuthClienteResponse {
+  token: String!
+  cliente: Cliente!
+}
+
+type InvitacionEmpresaResponse {
+  success: Boolean!
+  message: String!
+  invitacion: InvitacionEmpresa
 }
 
 type InvitacionEmpresa {
@@ -105,10 +196,10 @@ type InvitacionEmpresa {
   estado: EstadoInvitacion!
 }
 
-type InvitacionEmpresaResponse {
+type VerificacionOTPResult {
   success: Boolean!
   message: String!
-  invitacion: InvitacionEmpresa
+  usuario: Usuario
 }
 
 enum EstadoInvitacion {
@@ -117,35 +208,96 @@ enum EstadoInvitacion {
   RECHAZADA
 }
 
+type InvitacionProductoResponse {
+  success: Boolean!
+  message: String!
+  invitacion: InvitacionProducto
+}
+
+type InvitacionProducto {
+  id: ID!
+  email: String!
+  producto: Producto!
+  estado: EstadoInvitacion!
+}
+
 type Query {
-  obtenerUsuarios(query: QueryInput): [Usuario!]! @auth
-  listarUsuarios: [Usuario!]! @auth
+  """
+  Devuelve el usuario autenticado
+  """
+  me: Usuario @auth
+  """
+  Devuelve los usuarios administradores con opciones de paginación y búsqueda
+  """
+  listarAdministradores(
+    page: Int = 1
+    limit: Int = 20
+    query: String = ""
+    reverse: Boolean = false
+  ): [Usuario!]! @auth
+  obtenerAdministrador(id: ID!): Usuario @auth
+  listarEmpresas(
+    page: Int = 1
+    limit: Int = 20
+    query: String = ""
+    reverse: Boolean = false
+  ): [Empresa!]! @auth
   obtenerEmpresa(id: ID!): Empresa @auth
-  listarEmpresas: [Empresa!]! @auth
-  me: Usuario! @auth
+  listarProductos(
+    page: Int = 1
+    limit: Int = 20
+    query: String = ""
+    reverse: Boolean = false
+  ): [Producto!]! @auth
+  obtenerProducto(id: ID!): Producto @auth
+  listarProductosPorCliente(clienteId: ID!): [Producto!]! @auth
+  listarProductosPorEmpresa(empresaId: ID!): [Producto!]! @auth
+  misProductos: [Producto!]! @auth
+  listarMisProductosVersionesAntiguas(productoId: ID!): [VersionProducto!]!
+    @auth
+  obtenerNotificaciones: [Notificacion!]! @auth
+  verificarActualizaciones(productoId: ID!, versionActual: String!): Boolean!
+    @auth
 }
 
 type Mutation {
-  login(email: String!, password: String!): Token!
-  crearUsuarioNormal(input: CrearUsuarioNormalInput!): Usuario! @auth
-  crearAdmin(input: CrearAdminInput!): CrearAdminResult!
+  login(email: String!, password: String!): AuthResponse
   verificarOTP(
-    nombre: String!
+    email: String!
     telefono: String!
     otp: String!
-  ): VerificacionOTPResult!
-  actualizarUsuario(id: ID!, input: ActualizarUsuarioInput!): Usuario! @auth
-  eliminarUsuario(id: ID!): Boolean! @auth
-  toggleUsuario(id: ID!): Usuario! @auth
-  crearEmpresa(nombre: String!): Empresa! @auth
-  actualizarEmpresa(id: ID!, nombre: String!): Empresa! @auth
-  eliminarEmpresa(id: ID!): Boolean! @auth
-  actualizarAdmin(input: ActualizarAdminInput!): ActualizarAdminResponse! @auth
-  invitarUsuarioAEmpresa(email: String!, empresaId: ID!): InvitacionEmpresa!
-    @auth
-  aceptarInvitacionEmpresa(invitacionId: ID!): InvitacionEmpresaResponse! @auth
+  ): VerificacionOTPResult
+  crearAdministrador(input: CrearUsuarioInput!): Usuario @auth
+  actualizarAdministrador(id: ID, input: ActualizarUsuarioInput!): Usuario @auth
+  eliminarAdministrador(id: ID): Boolean @auth
+  crearEmpresa(input: CrearEmpresaInput!): Empresa @auth
+  actualizarEmpresa(
+    id: ID!
+    input: ActualizarEmpresaInput!
+    usuariosEliminados: [ID!]
+  ): Empresa @auth
+  eliminarEmpresa(id: ID!): Boolean @auth
+  invitarUsuarioAEmpresa(
+    email: String!
+    empresaId: ID!
+  ): InvitacionEmpresaResponse @auth
+  crearProducto(input: CrearProductoInput!): Producto @auth
+  actualizarProducto(id: ID!, input: ActualizarProductoInput!): Producto @auth
+  eliminarProducto(id: ID!): Boolean @auth
+  asociarProductoACliente(clienteId: ID!, productoId: ID!): Cliente @auth
+  invitarUsuarioAProducto(
+    email: String!
+    productoId: ID!
+  ): InvitacionProductoResponse @auth
+  agregarDispositivo(dispositivoInput: DispositivoInput!): Cliente @auth
+  eliminarDispositivo(dispositivoId: ID!): Cliente @auth
+  verificarCorreoProducto(productoId: ID!, email: String!): Boolean! @auth
+  reducirCreditos(usuarioId: ID!, cantidad: Int!): Usuario @auth
+  aumentarCreditos(usuarioId: ID!, cantidad: Int!): Usuario @auth
 }
 
 type Subscription {
-  invitacionEmpresaRecibida: InvitacionEmpresa! @auth
+  notificacionRecibida: Notificacion! @auth
+  notificacionActualizacion: Notificacion! @auth
+  notificacionVencimiento: Notificacion! @auth
 }

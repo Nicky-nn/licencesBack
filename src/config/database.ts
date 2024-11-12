@@ -1,6 +1,7 @@
-import { MongoClient, Db } from 'mongodb';
+import { MongoClient, Db, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
+import { Usuario } from '../utils/interfaces';
 
 dotenv.config();
 
@@ -28,13 +29,18 @@ export const connectDatabase = async (): Promise<void> => {
         10,
       );
       const newSuperAdmin = {
+        id: new ObjectId().toHexString(),
+        nombre: 'Super Admin',
+        apellido: 'Bot',
         email: process.env.SUPER_ADMIN_EMAIL || 'admin@example.com',
         password: hashedPassword,
+        telefono: process.env.SUPER_ADMIN_PHONE || '0000000000',
         rol: 'SUPER_ADMIN',
         estado: 'ACTIVO',
-        nombre: 'Super Admin',
-        telefono: process.env.SUPER_ADMIN_PHONE || '0000000000',
-      };
+        creditos: 1000,
+        empresas: [],
+        productos: [],
+      } as Usuario;
       await db.collection('usuarios').insertOne(newSuperAdmin);
       console.log('✅ SUPER_ADMIN creado');
     } else {

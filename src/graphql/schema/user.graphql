@@ -195,18 +195,19 @@ type InvitacionEmpresa {
   empresa: Empresa!
   estado: EstadoInvitacion!
 }
-
+enum EstadoInvitacion {
+  PENDIENTE
+  ACEPTADA
+  RECHAZADA
+  CANCELADA
+}
 type VerificacionOTPResult {
   success: Boolean!
   message: String!
   usuario: Usuario
 }
 
-enum EstadoInvitacion {
-  PENDIENTE
-  ACEPTADA
-  RECHAZADA
-}
+
 
 type InvitacionProductoResponse {
   success: Boolean!

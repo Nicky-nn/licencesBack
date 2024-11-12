@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../../config/env';
 import { generateOTP, verifyOTP, saveOTP } from '../../services/otp';
 import { sendWhatsAppMessage } from '../../services/whatsapp';
+import { PubSub, withFilter } from 'graphql-subscriptions';
 
 interface JwtPayload {
   id: string;
@@ -17,6 +18,9 @@ interface QueryParams {
   apellido?: string;
   correo?: string;
 }
+
+const NOTIFICACION_CHANNEL = 'NOTIFICACIONES';
+const pubsub = new PubSub();
 
 const verifyToken = (token: string): JwtPayload => {
   if (!token) {
@@ -661,6 +665,244 @@ const userResolvers: IResolvers = {
         throw new Error('No se pudo obtener la empresa actualizada');
       }
       return empresaActualizada;
+    },
+    eliminarEmpresa: async (_, { id }, { db, token }) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
+
+      console.log('Intento de eliminación de empresa:', {
+        empresaId: id,
+        usuarioId: userId,
+        rolUsuario: rol,
+      });
+
+      // Verificar si la empresa existe
+      const empresa = await db
+        .collection('empresas')
+        .findOne({ _id: new ObjectId(id) });
+
+      if (!empresa) {
+        throw new Error('Empresa no encontrada');
+      }
+
+      // Verificar permisos
+      if (rol === 'SUPER_ADMIN') {
+        // El SUPER_ADMIN tiene permiso total, puede continuar
+        console.log('Eliminación autorizada: Usuario es SUPER_ADMIN');
+      } else {
+        // Para otros roles, verificar si es ADMIN_EMPRESA
+        const esAdminEmpresa = empresa.usuarios.some(
+          (usuario: { usuario: string; cargo: string }) =>
+            usuario.usuario === userId && usuario.cargo === 'ADMIN_EMPRESA',
+        );
+
+        if (!esAdminEmpresa) {
+          console.log('Eliminación denegada: Usuario no es ADMIN_EMPRESA');
+          throw new Error('No tienes permisos para eliminar esta empresa');
+        }
+        console.log('Eliminación autorizada: Usuario es ADMIN_EMPRESA');
+      }
+
+      try {
+        // Primero, obtenemos todos los usuarios asociados a la empresa
+        const usuariosEmpresa = empresa.usuarios.map(
+          (u: { usuario: any }) => u.usuario,
+        );
+        console.log('Usuarios asociados a la empresa:', usuariosEmpresa);
+
+        // Eliminar la empresa
+        const resultadoEliminacion = await db.collection('empresas').deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (resultadoEliminacion.deletedCount === 0) {
+          throw new Error('No se pudo eliminar la empresa');
+        }
+
+        // También podrías querer actualizar la referencia en los usuarios
+        // Esto es opcional, dependiendo de tu lógica de negocio
+        if (usuariosEmpresa.length > 0) {
+          await db.collection('usuarios').updateMany(
+            {
+              _id: {
+                $in: usuariosEmpresa.map((id: number) => new ObjectId(id)),
+              },
+            },
+            { $pull: { empresas: new ObjectId(id) } },
+          );
+        }
+
+        // Retornar la empresa eliminada
+        return true;
+      } catch (error) {
+        throw new Error(
+          'Error al eliminar la empresa: ' + (error as Error).message,
+        );
+      }
+    },
+    invitarUsuarioAEmpresa: async (_, { email, empresaId }, { db, token }) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
+
+      console.log('Intento de invitación:', {
+        empresaId,
+        email,
+        usuarioInvitante: userId,
+        rolInvitante: rol,
+      });
+
+      try {
+        // 1. Verificar si el usuario a invitar existe
+        const usuarioInvitado = await db
+          .collection('usuarios')
+          .findOne({ email });
+
+        if (!usuarioInvitado) {
+          return {
+            success: false,
+            message:
+              'El correo electrónico no corresponde a ningún usuario registrado',
+            invitacion: null,
+          };
+        }
+
+        // 2. Verificar si la empresa existe
+        const empresa = await db
+          .collection('empresas')
+          .findOne({ _id: new ObjectId(empresaId) });
+
+        if (!empresa) {
+          return {
+            success: false,
+            message: 'La empresa no existe',
+            invitacion: null,
+          };
+        }
+
+        // 3. Verificar permisos
+        if (rol !== 'SUPER_ADMIN') {
+          const esAdminEmpresa = empresa.usuarios.some(
+            (u: { usuario: string; cargo: string }) =>
+              u.usuario === userId && u.cargo === 'ADMIN_EMPRESA',
+          );
+
+          if (!esAdminEmpresa) {
+            return {
+              success: false,
+              message:
+                'No tienes permisos para enviar invitaciones en esta empresa',
+              invitacion: null,
+            };
+          }
+        }
+
+        // 4. Verificar si ya existe una invitación pendiente
+        const invitacionExistente = await db
+          .collection('invitaciones')
+          .findOne({
+            email,
+            'empresa._id': new ObjectId(empresaId),
+            estado: 'PENDIENTE',
+          });
+
+        if (invitacionExistente) {
+          return {
+            success: false,
+            message: 'Ya existe una invitación pendiente para este usuario',
+            invitacion: {
+              id: invitacionExistente._id.toString(),
+              email: invitacionExistente.email,
+              empresa: invitacionExistente.empresa,
+              estado: invitacionExistente.estado,
+            },
+          };
+        }
+
+        // 5. Verificar si el usuario ya está en la empresa
+        const yaEsMiembro = empresa.usuarios.some(
+          (u: { usuario: any }) => u.usuario === usuarioInvitado._id.toString(),
+        );
+        if (yaEsMiembro) {
+          return {
+            success: false,
+            message: 'El usuario ya es miembro de esta empresa',
+            invitacion: null,
+          };
+        }
+
+        // 6. Crear la invitación
+        const nuevaInvitacion = {
+          _id: new ObjectId(),
+          email,
+          empresa: {
+            _id: empresa._id,
+            nombre: empresa.nombre,
+          },
+          estado: 'PENDIENTE',
+          fechaCreacion: new Date(),
+          usuarioInvitante: userId,
+        };
+
+        await db.collection('invitaciones').insertOne(nuevaInvitacion);
+
+        // 7. Crear y enviar la notificación
+        const notificacion = {
+          id: new ObjectId().toString(),
+          mensaje: `Has recibido una invitación para unirte a la empresa ${empresa.nombre}`,
+          fecha: new Date().toISOString(),
+          usuarioId: usuarioInvitado._id.toString(), // ID del usuario que recibirá la notificación
+        };
+
+        // Publicar la notificación
+        pubsub.publish(NOTIFICACION_CHANNEL, {
+          notificacionRecibida: notificacion,
+        });
+
+        return {
+          success: true,
+          message: 'Invitación enviada exitosamente',
+          invitacion: {
+            id: nuevaInvitacion._id.toString(),
+            email: nuevaInvitacion.email,
+            empresa,
+            estado: nuevaInvitacion.estado,
+          },
+        };
+      } catch (error) {
+        console.error('Error al crear invitación:', error);
+        return {
+          success: false,
+          message:
+            'Error al procesar la invitación: ' + (error as Error).message,
+          invitacion: null,
+        };
+      }
+    },
+  },
+  Subscription: {
+    notificacionRecibida: {
+      subscribe: withFilter(
+        () => pubsub.asyncIterator([NOTIFICACION_CHANNEL]),
+        (payload, variables, { token }) => {
+          if (!token) return false;
+
+          try {
+            const decodedToken = verifyToken(token);
+            // Solo enviar la notificación al usuario destinatario
+            return payload.notificacionRecibida.usuarioId === decodedToken.id;
+          } catch (error) {
+            return false;
+          }
+        },
+      ),
     },
   },
 };

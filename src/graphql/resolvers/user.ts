@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { IResolvers } from '@graphql-tools/utils';
 import { ObjectId } from 'mongodb';
 import bcrypt from 'bcryptjs';
@@ -29,98 +30,151 @@ const verifyToken = (token: string): JwtPayload => {
   }
 };
 
+export function parseQuery(query: string) {
+  const queryObj: { $or?: { [key: string]: RegExp }[] } = {};
+  const andConditions = query.split('&&'); // Dividir las condiciones por '&&' para aplicar AND
+
+  andConditions.forEach((condition) => {
+    const orConditions = condition.split('||'); // Dividir las condiciones por '||' para aplicar OR
+    const orQuery: { [x: number]: RegExp }[] = [];
+
+    orConditions.forEach((cond) => {
+      const [key, value] = cond.split('=');
+      if (key && value) {
+        // Comprobar si la clave es válida. Aquí no limitamos las claves (trabajamos con cualquier clave)
+        // Usamos RegExp para realizar búsquedas parciales y case insensitive
+        orQuery.push({ [key]: new RegExp(value, 'i') });
+      }
+    });
+
+    if (orQuery.length > 0) {
+      queryObj['$or'] = orQuery; // Si hay condiciones OR, las aplicamos
+    }
+  });
+
+  return queryObj;
+}
+
 const userResolvers: IResolvers = {
   Usuario: {
-    id: (parent) => parent._id.toString(),
-    empresa: async (parent, _, { db }) => {
-      if (parent.empresaId) {
-        try {
-          const objectId = new ObjectId(parent.empresaId);
-          const empresa = await db
-            .collection('empresas')
-            .findOne({ _id: objectId });
-          return empresa ? { ...empresa, id: empresa._id.toString() } : null;
-        } catch (error) {
-          console.error('Invalid empresaId:', parent.empresaId);
-          return null;
-        }
-      }
-      return null;
-    },
+    id: (parent) => parent._id || parent.id,
   },
   Query: {
-    obtenerUsuarios: async (
-      _: any,
-      { query }: { query?: QueryParams },
-      { db, token }: { db: any; token: string },
-    ): Promise<any[]> => {
-      const decodedToken = verifyToken(token);
-
-      const dbQuery: any = {};
-
-      // Si se proporciona una consulta, construirla basada en los parámetros proporcionados
-      if (query) {
-        Object.entries(query).forEach(([key, value]) => {
-          if (value && value.length >= 3) {
-            dbQuery[key] = new RegExp(value, 'i');
-          }
-        });
-      }
-
-      if (decodedToken.rol === 'SUPER_ADMIN') {
-        return await db.collection('usuarios').find(dbQuery).toArray();
-      } else if (decodedToken.rol === 'ADMIN') {
-        return await db
-          .collection('usuarios')
-          .find({
-            $and: [
-              dbQuery,
-              {
-                $or: [
-                  { usuCre: decodedToken.id },
-                  { _id: new ObjectId(decodedToken.id) },
-                ],
-              },
-            ],
-          })
-          .toArray();
-      } else {
-        return await db
-          .collection('usuarios')
-          .find({
-            ...dbQuery,
-            _id: new ObjectId(decodedToken.id),
-          })
-          .toArray();
-      }
-    },
-    listarUsuarios: async (_, __, { db, token }) => {
-      const decodedToken = verifyToken(token);
-
-      if (decodedToken.rol === 'SUPER_ADMIN') {
-        return await db.collection('usuarios').find().toArray();
-      } else if (decodedToken.rol === 'ADMIN') {
-        return await db
-          .collection('usuarios')
-          .find({
-            $or: [
-              { usuCre: decodedToken.id },
-              { _id: new ObjectId(decodedToken.id) },
-            ],
-          })
-          .toArray();
-      } else {
-        return await db
-          .collection('usuarios')
-          .find({ _id: new ObjectId(decodedToken.id) })
-          .toArray();
-      }
-    },
     me: async (_, __, { db, token }) => {
       const decodedToken = verifyToken(token);
       return await db
         .collection('usuarios')
         .findOne({ _id: new ObjectId(decodedToken.id) });
+    },
+    listarAdministradores: async (
+      _,
+      { page = 1, limit = 20, query = '', reverse = false },
+      { db },
+    ) => {
+      const skip = (page - 1) * limit;
+      let filter = { rol: 'ADMIN' }; // Filtro por rol 'ADMIN' por defecto
+
+      // Si hay una consulta (query), la procesamos
+      if (query) {
+        const queryObj = parseQuery(query); // Parseamos la búsqueda dinámica
+        filter = { ...filter, ...queryObj };
+      }
+
+      // Obtener los administradores con la paginación y el filtro de búsqueda
+      const admins = await db
+        .collection('usuarios')
+        .find(filter)
+        .skip(skip)
+        .limit(limit)
+        .sort({ id: reverse ? -1 : 1 }) // Aplicamos orden inverso si 'reverse' es true
+        .toArray();
+
+      if (!admins || admins.length === 0) {
+        throw new Error('No hay administradores');
+      }
+
+      return admins;
+    },
+
+    obtenerAdministrador: async (_, { id }, { db }) => {
+      const th = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(id), rol: 'ADMIN' });
+      if (!th) {
+        throw new Error('Administrador no encontrado');
+      }
+      return th;
+    },
+
+    // listar empresas segun el suuario
+    listarEmpresas: async (
+      _,
+      { page = 1, limit = 20, query = '', reverse = false },
+      { db, token },
+    ) => {
+      const decodedToken = verifyToken(token);
+      const skip = (page - 1) * limit;
+      let filter = { rol: 'EMPRESA', id: decodedToken.id }; // Filtro por rol 'EMPRESA' por defecto
+
+      // Si hay una consulta (query), la procesamos
+      if (query) {
+        const queryObj = parseQuery(query); // Parseamos la búsqueda dinámica
+        filter = { ...filter, ...queryObj };
+      }
+
+      // Obtener las empresas con la paginación y el filtro de búsqueda
+      const empresas = await db
+        .collection('usuarios')
+        .find(filter)
+        .skip(skip)
+        .limit(limit)
+        .sort({ id: reverse ? -1 : 1 }) // Aplicamos orden inverso si 'reverse' es true
+        .toArray();
+
+      if (!empresas || empresas.length === 0) {
+        throw new Error('No hay empresas para este usuario');
+      }
+      return empresas;
+    },
+    obtenerEmpresa: async (_, { id }, { db }) => {
+      const th = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(id), rol: 'EMPRESA' });
+      if (!th) {
+        throw new Error('Empresa no encontrada');
+      }
+      return th;
+    },
+    // listaremos productos segun usuario y si el usuario pertenece a una empresa igual se listaran los productos de la empresa
+    listarProductos: async (
+      _,
+      { page = 1, limit = 20, query = '', reverse = false },
+      { db, token },
+    ) => {
+      const decodedToken = verifyToken(token);
+      const skip = (page - 1) * limit;
+      let filter = { id: decodedToken.id }; // Filtro por id de usuario
+
+      // Si hay una consulta (query), la procesamos
+      if (query) {
+        const queryObj = parseQuery(query); // Parseamos la búsqueda dinámica
+        filter = { ...filter, ...queryObj };
+      }
+
+      // Obtener los productos con la paginación y el filtro de búsqueda
+      const productos = await db
+        .collection('productos')
+        .find(filter)
+        .skip(skip)
+        .limit(limit)
+        .sort({ id: reverse ? -1 : 1 }) // Aplicamos orden inverso si 'reverse' es true
+        .toArray();
+
+      if (!productos || productos.length === 0) {
+        throw new Error('No hay productos para este usuario');
+      }
+
+      return productos;
     },
   },
   Mutation: {
@@ -130,7 +184,7 @@ const userResolvers: IResolvers = {
         throw new Error('Usuario no encontrado');
       }
       if (usuario.estado !== 'ACTIVO') {
-        throw new Error('Usuario inactivo');
+        throw new Error('Usuario inactivo, No se confirmó el código OTP');
       }
       const isValid = await bcrypt.compare(password, usuario.password);
       if (!isValid) {
@@ -143,75 +197,56 @@ const userResolvers: IResolvers = {
       );
       return { token, usuario };
     },
-    crearUsuarioNormal: async (_, { input }, { db, token }) => {
-      const decodedToken = verifyToken(token);
+    // SOLO UN SUPERADMIN PUEDE CREAR OTRO SUPERADMIN y ADMIN, por defcto el rol es ADMIN
 
-      if (decodedToken.rol !== 'ADMIN' && decodedToken.rol !== 'SUPER_ADMIN') {
-        throw new Error('No tienes permisos para crear usuarios');
-      }
-
-      // Generar identificador único de número de teléfono
-      let identificadorTelefono;
-      let isUnique = false;
-      while (!isUnique) {
-        identificadorTelefono = Math.floor(Math.random() * 1000000000000000)
-          .toString()
-          .padStart(15, '0');
-        const existingIdentificador = await db
-          .collection('usuarios')
-          .findOne({ identificadorTelefono });
-        if (!existingIdentificador) {
-          isUnique = true;
+    crearAdministrador: async (_, { input }, { db, token }) => {
+      // Si el rol es SUPER_ADMIN, se requiere un token para validar el rol
+      if (input.rol === 'ADMIN' || input.rol === 'CLIENTE') {
+        // No se requiere token para ADMIN o CLIENTE
+        // Procedemos con la creación sin validar el rol en el token
+      } else if (input.rol === 'SUPER_ADMIN') {
+        // Validar que el token esté presente y tenga el rol adecuado
+        if (!token) {
+          throw new Error('No se proporcionó el token de autorización');
         }
+
+        const decodedToken = verifyToken(token);
+
+        // Validar el rol del token (asumimos que el token tiene información del rol)
+        if (decodedToken.rol !== 'SUPER_ADMIN') {
+          throw new Error(
+            'El token no tiene permisos suficientes para crear usuarios',
+          );
+        }
+      } else {
+        throw new Error('Rol no permitido');
       }
 
-      // Validar email único solo para los usuarios del admin actual
-      const existingUser = await db.collection('usuarios').findOne({
-        email: input.email,
-        usuCre: decodedToken.id,
-      });
-      if (existingUser) {
-        throw new Error(
-          'Ya existe un usuario con este correo electrónico en tú grupo',
-        );
-      }
-
-      const hashedPassword = await bcrypt.hash(input.password, 10);
-      const usuario = {
-        ...input,
-        password: hashedPassword,
-        rol: 'NORMAL',
-        estado: 'INACTIVO',
-        identificadorTelefono,
-        usuCre: decodedToken.id,
-        fechaCre: new Date(),
-        usuMod: decodedToken.id,
-        fechaMod: new Date(),
-      };
-
-      const result = await db.collection('usuarios').insertOne(usuario);
-      return { ...usuario, id: result.insertedId };
-    },
-    crearAdmin: async (_, { input }, { db }) => {
+      // Verificar si ya existe un usuario con el mismo email o teléfono
       const existingUser = await db.collection('usuarios').findOne({
         $or: [{ email: input.email }, { telefono: input.telefono }],
       });
 
+      // Caso 1: Si el usuario ya existe y está "ACTIVO", lanzar un error
       if (existingUser && existingUser.estado === 'ACTIVO') {
         throw new Error(
           'Ya existe un usuario activo con este email o número de teléfono',
         );
       }
 
+      // Caso 2: Si el usuario ya existe y está "PENDIENTE", reenviar el OTP
       if (existingUser && existingUser.estado === 'PENDIENTE') {
-        const otp = generateOTP();
-        await saveOTP(input.telefono, otp);
+        // No enviar OTP si es CLIENTE
+        if (input.rol !== 'CLIENTE') {
+          const otp = generateOTP();
+          await saveOTP(input.telefono, otp);
 
-        try {
-          await sendWhatsAppMessage(input.telefono, otp, otp.toString());
-        } catch (error) {
-          console.error('Error al enviar OTP por WhatsApp:', error);
-          throw new Error('No se pudo enviar el código de verificación');
+          try {
+            await sendWhatsAppMessage(input.telefono, otp, otp.toString());
+          } catch (error) {
+            console.error('Error al enviar OTP por WhatsApp:', error);
+            throw new Error('No se pudo enviar el código de verificación');
+          }
         }
 
         return {
@@ -221,255 +256,139 @@ const userResolvers: IResolvers = {
         };
       }
 
-      const otp = generateOTP();
-      await saveOTP(input.telefono, otp);
+      // Caso 3: Crear un nuevo usuario
+      let otp;
+      if (input.rol !== 'CLIENTE') {
+        // Solo generar OTP si el rol no es CLIENTE
+        otp = generateOTP();
+        await saveOTP(input.telefono, otp);
 
-      try {
-        await sendWhatsAppMessage(input.telefono, otp, otp.toString());
-      } catch (error) {
-        console.error('Error al enviar OTP por WhatsApp:', error);
-        throw new Error('No se pudo enviar el código de verificación');
+        try {
+          await sendWhatsAppMessage(input.telefono, otp, otp.toString());
+        } catch (error) {
+          console.error('Error al enviar OTP por WhatsApp:', error);
+          throw new Error('No se pudo enviar el código de verificación');
+        }
       }
 
+      // Determinar el estado inicial según el rol
+      const estadoInicial = input.rol === 'CLIENTE' ? 'ACTIVO' : 'PENDIENTE';
+
+      // Hash de la contraseña y creación del nuevo usuario
       const hashedPassword = await bcrypt.hash(input.password, 10);
       const usuario = {
         ...input,
         password: hashedPassword,
-        rol: 'ADMIN',
-        estado: 'PENDIENTE',
-        fechaCre: new Date(),
-        fechaMod: new Date(),
+        estado: estadoInicial,
+        rol: input.rol || 'ADMIN',
+        creditos: 0,
+        urlImagen: `https://www.gravatar.com/avatar/${input.email}?d=identicon`,
       };
-
       const result = await db.collection('usuarios').insertOne(usuario);
-      const createdUser = { ...usuario, id: result.insertedId };
 
-      return {
-        success: true,
-        message: 'Se ha creado el usuario y enviado el código de verificación',
-        usuario: createdUser,
-      };
+      // Buscar el documento recién insertado para asegurarnos de tener todos los campos
+      const createdUser = await db
+        .collection('usuarios')
+        .findOne({ _id: result.insertedId });
+
+      if (!createdUser) {
+        throw new Error('Error al crear el usuario');
+      }
+
+      return await db
+        .collection('usuarios')
+        .findOne({ _id: result.insertedId });
     },
-    verificarOTP: async (_, { nombre, telefono, otp }, { db }) => {
+    verificarOTP: async (_, { email, telefono, otp }, { db }) => {
       const usuario = await db
         .collection('usuarios')
-        .findOne({ nombre, telefono });
+        .findOne({ email, telefono });
       if (!usuario) {
-        return {
-          success: false,
-          message:
-            'No se encontró un usuario con el nombre y teléfono proporcionados',
-          usuario: null,
-        };
+        throw new Error('Usuario no encontrado');
       }
       if (usuario.estado === 'ACTIVO') {
-        return {
-          success: false,
-          message: 'Usuario ya activo',
-          usuario: null,
-        };
+        throw new Error('Usuario ya activo');
       }
-
-      const isValidOTP = await verifyOTP(telefono, otp);
-      if (!isValidOTP) {
+      const isValid = await verifyOTP(telefono, otp);
+      if (!isValid) {
         return {
           success: false,
           message: 'OTP inválido',
           usuario: null,
         };
       }
-
       await db
         .collection('usuarios')
         .updateOne(
-          { _id: usuario._id },
-          { $set: { estado: 'ACTIVO', fechaMod: new Date() } },
+          { email, telefono },
+          { $set: { estado: 'ACTIVO', creditos: 20 } },
         );
-
-      const updatedUser = { ...usuario, estado: 'ACTIVO' };
-
       return {
         success: true,
-        message: 'OTP verificado correctamente',
-        usuario: updatedUser,
+        message: 'Código OTP verificado',
+        usuario,
       };
     },
-    toggleUsuario: async (_, { id }, { db, token }) => {
+    actualizarAdministrador: async (_, { id, input }, { db, token }) => {
+      // Verificar si el token está presente
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
       const decodedToken = verifyToken(token);
 
-      let usuario;
+      // Determinar el ID a actualizar (clientes o administradores solo pueden modificar su propio perfil)
+      const userId = decodedToken.rol === 'SUPER_ADMIN' ? id : decodedToken.id;
+
+      // Verificar si el usuario existe
+      const existingUser = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(userId) });
+      if (!existingUser) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // Definir campos restringidos para cada rol
+      const restrictedFieldsForClients = ['email', 'telefono'];
+      const restrictedFieldsForAdmin = ['email', 'telefono'];
+      const restrictedFieldsForSuperAdmin: never[] = []; // Super admin puede modificar todos los campos
+
+      let restrictedFields;
       if (decodedToken.rol === 'SUPER_ADMIN') {
-        usuario = await db
-          .collection('usuarios')
-          .findOne({ _id: new ObjectId(id) });
+        restrictedFields = restrictedFieldsForSuperAdmin;
       } else if (decodedToken.rol === 'ADMIN') {
-        usuario = await db.collection('usuarios').findOne({
-          _id: new ObjectId(id),
-          usuCre: decodedToken.id,
-        });
-      }
-
-      if (!usuario) {
-        throw new Error(
-          'No tienes permiso para modificar este usuario o el usuario no existe',
-        );
-      }
-
-      const nuevoEstado = usuario.estado === 'ACTIVO' ? 'INACTIVO' : 'ACTIVO';
-
-      const result = await db.collection('usuarios').updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: {
-            estado: nuevoEstado,
-            usuMod: decodedToken.id,
-            fechaMod: new Date(),
-          },
-        },
-      );
-
-      if (result.modifiedCount === 0) {
-        throw new Error('No se pudo cambiar el estado del usuario');
-      }
-
-      return await db.collection('usuarios').findOne({ _id: new ObjectId(id) });
-    },
-    actualizarUsuario: async (_, { id, input }, { db, token }) => {
-      const decodedToken = verifyToken(token);
-
-      let usuarioAActualizar;
-      if (decodedToken.rol === 'SUPER_ADMIN') {
-        usuarioAActualizar = await db
-          .collection('usuarios')
-          .findOne({ _id: new ObjectId(id) });
-      } else if (decodedToken.rol === 'ADMIN') {
-        usuarioAActualizar = await db.collection('usuarios').findOne({
-          _id: new ObjectId(id),
-          $or: [
-            { usuCre: decodedToken.id },
-            { _id: new ObjectId(decodedToken.id) },
-          ],
-        });
+        restrictedFields = restrictedFieldsForAdmin;
+      } else if (decodedToken.rol === 'CLIENTE') {
+        restrictedFields = restrictedFieldsForClients;
       } else {
-        usuarioAActualizar = await db
-          .collection('usuarios')
-          .findOne({ _id: new ObjectId(decodedToken.id) });
+        throw new Error('Rol de usuario no reconocido');
       }
 
-      if (!usuarioAActualizar) {
-        throw new Error(
-          'No tienes permiso para actualizar este usuario o el usuario no existe',
-        );
+      // Filtrar el input para excluir los campos restringidos
+      const filteredInput = Object.keys(input)
+        .filter((key) => !restrictedFields.includes(key))
+        .reduce((obj: { [key: string]: any }, key) => {
+          obj[key] = input[key];
+          return obj;
+        }, {});
+
+      // Si no queda nada en input después del filtrado, lanzar un error
+      if (Object.keys(filteredInput).length === 0) {
+        throw new Error('No tienes permiso para actualizar estos campos');
       }
 
-      if (input.password) {
-        input.password = await bcrypt.hash(input.password, 10);
-      }
+      // Actualizar el usuario solo con los campos permitidos
+      const result = await db
+        .collection('usuarios')
+        .updateOne({ _id: new ObjectId(userId) }, { $set: filteredInput });
 
-      const result = await db.collection('usuarios').updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: {
-            ...input,
-            usuMod: decodedToken.id,
-            fechaMod: new Date(),
-          },
-        },
-      );
-
-      if (result.modifiedCount === 0) {
+      if (!result.matchedCount) {
         throw new Error('No se pudo actualizar el usuario');
       }
 
-      return await db.collection('usuarios').findOne({ _id: new ObjectId(id) });
-    },
-    eliminarUsuario: async (_, { id }, { db, token }) => {
-      const decodedToken = verifyToken(token);
-
-      let usuarioAEliminar;
-      if (decodedToken.rol === 'SUPER_ADMIN') {
-        usuarioAEliminar = await db
-          .collection('usuarios')
-          .findOne({ _id: new ObjectId(id) });
-      } else if (decodedToken.rol === 'ADMIN') {
-        usuarioAEliminar = await db.collection('usuarios').findOne({
-          _id: new ObjectId(id),
-          usuCre: decodedToken.id,
-        });
-      }
-
-      if (!usuarioAEliminar) {
-        throw new Error(
-          'No tienes permiso para eliminar este usuario o el usuario no existe',
-        );
-      }
-
-      const result = await db
+      // Retornar el usuario actualizado
+      return await db
         .collection('usuarios')
-        .deleteOne({ _id: new ObjectId(id) });
-
-      if (result.deletedCount === 0) {
-        throw new Error('No se pudo eliminar el usuario');
-      }
-
-      return true;
-    },
-    actualizarAdmin: async (_, { input }, { db, token }) => {
-      const decodedToken = verifyToken(token);
-
-      if (decodedToken.rol !== 'ADMIN') {
-        throw new Error(
-          'No tienes permisos para actualizar información de administrador',
-        );
-      }
-
-      const { empresaId, ...updateData } = input;
-
-      // Verificar si la empresa existe
-      let empresa = null;
-      if (empresaId) {
-        empresa = await db
-          .collection('empresas')
-          .findOne({ _id: new ObjectId(empresaId) });
-        if (!empresa) {
-          throw new Error('La empresa especificada no existe');
-        }
-      }
-
-      // Actualizar el usuario
-      const result = await db.collection('usuarios').updateOne(
-        { _id: new ObjectId(decodedToken.id) },
-        {
-          $set: {
-            ...updateData,
-            empresaId: empresaId ? new ObjectId(empresaId) : null,
-            usuMod: decodedToken.id,
-            fechaMod: new Date(),
-          },
-        },
-      );
-
-      if (result.modifiedCount === 0) {
-        throw new Error(
-          'No se pudo actualizar la información del administrador',
-        );
-      }
-
-      // Obtener el usuario actualizado
-      const updatedUser = await db
-        .collection('usuarios')
-        .findOne({ _id: new ObjectId(decodedToken.id) });
-
-      // Si hay una empresa asociada, incluirla en la respuesta
-      if (empresa) {
-        updatedUser.empresa = { ...empresa, id: empresa._id.toString() };
-      }
-
-      return {
-        success: true,
-        message: 'Información del administrador actualizada correctamente',
-        usuario: updatedUser,
-      };
+        .findOne({ _id: new ObjectId(userId) });
     },
   },
 };

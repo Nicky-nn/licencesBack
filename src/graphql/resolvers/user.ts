@@ -59,12 +59,81 @@ const userResolvers: IResolvers = {
   Usuario: {
     id: (parent) => parent._id || parent.id,
   },
+  Empresa: {
+    _id: (parent) => parent._id.toString(),
+  },
   Query: {
     me: async (_, __, { db, token }) => {
+      // Decodificar el token para obtener el ID del usuario
       const decodedToken = verifyToken(token);
-      return await db
+
+      // Buscar el usuario en la colección de usuarios
+      const usuario = await db
         .collection('usuarios')
         .findOne({ _id: new ObjectId(decodedToken.id) });
+
+      if (!usuario) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // Buscar todas las empresas basándose en el array de empresas del usuario
+      const empresas = await db
+        .collection('empresas')
+        .find({
+          _id: { $in: usuario.empresas },
+        })
+        .toArray();
+
+      // Mapear las empresas para asegurar que tengan la estructura correcta
+      const empresasMapeadas = empresas.map(
+        (empresa: {
+          _id: { toString: () => any };
+          nombre: string;
+          correo: string;
+          direccion: string;
+          urlImagen: any;
+          usuarios: any[];
+          productos: any;
+          createdAt: any;
+          updatedAt: any;
+          usucreAt: any;
+          usuactAt: any;
+        }) => ({
+          _id: empresa._id.toString(),
+          nombre: empresa.nombre,
+          correo: empresa.correo,
+          direccion: empresa.direccion,
+          urlImagen: empresa.urlImagen,
+          usuarios:
+            empresa.usuarios?.map(
+              (u: { usuario: { toString: () => any }; cargo: any }) => ({
+                usuario: u.usuario.toString(),
+                cargo: u.cargo,
+              }),
+            ) || [],
+          productos: empresa.productos || [],
+          createdAt: empresa.createdAt,
+          updatedAt: empresa.updatedAt,
+          usucreAt: empresa.usucreAt,
+          usuactAt: empresa.usuactAt,
+        }),
+      );
+
+      // Crear el objeto de retorno que coincida con el schema
+      return {
+        id: usuario._id.toString(),
+        urlImagen: usuario.urlImagen,
+        nombre: usuario.nombre,
+        apellido: usuario.apellido,
+        email: usuario.email,
+        password: usuario.password,
+        telefono: usuario.telefono,
+        rol: usuario.rol,
+        estado: usuario.estado,
+        creditos: usuario.creditos,
+        empresas: empresasMapeadas,
+        productos: usuario.productos || [],
+      };
     },
     listarAdministradores: async (
       _,
@@ -389,6 +458,210 @@ const userResolvers: IResolvers = {
       return await db
         .collection('usuarios')
         .findOne({ _id: new ObjectId(userId) });
+    },
+    eliminarAdministrador: async (_, { id }, { db, token }) => {
+      // Verificar si el token está presente
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+
+      // Determinar el ID a eliminar (admin y clientes solo pueden eliminarse a sí mismos)
+      const userId = decodedToken.rol === 'SUPER_ADMIN' ? id : decodedToken.id;
+
+      // Verificar si el usuario existe
+      const existingUser = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(userId) });
+      if (!existingUser) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // Restricción de eliminación: solo los super admins pueden eliminar a otros usuarios
+      if (decodedToken.rol !== 'SUPER_ADMIN' && userId !== decodedToken.id) {
+        throw new Error('No tienes permiso para eliminar otros usuarios');
+      }
+
+      // Eliminar el usuario
+      const result = await db
+        .collection('usuarios')
+        .deleteOne({ _id: new ObjectId(userId) });
+
+      if (!result.deletedCount) {
+        throw new Error('No se pudo eliminar el usuario');
+      }
+
+      return true;
+    },
+    crearEmpresa: async (_, { input }, { db, token }) => {
+      // 1. Verificar el token
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      // Verificar si ya se creó una empresa por teléfono y correo
+      const empresa = await db
+        .collection('empresas')
+        .findOne({ correo: input.correo, telefono: input.telefono });
+      if (empresa) {
+        throw new Error('Ya existe una empresa con este correo o teléfono');
+      }
+
+      const decodedToken = verifyToken(token);
+
+      // 2. Verificar si el usuario tiene el rol adecuado
+      if (!['ADMIN', 'SUPER_ADMIN'].includes(decodedToken.rol)) {
+        throw new Error('No tienes permisos para crear una empresa');
+      }
+
+      // 3. Buscar al usuario en la base de datos
+      const usuario = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(decodedToken.id) });
+
+      if (!usuario) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // 4. Verificar que el usuario tenga suficientes créditos
+      if (usuario.creditos < 5) {
+        throw new Error(
+          'No tienes suficientes créditos para crear una empresa',
+        );
+      }
+
+      // 5. Crear la empresa en la base de datos
+      const nuevaEmpresa = {
+        ...input,
+        usuarios: [{ usuario: decodedToken.id, cargo: 'ADMIN_EMPRESA' }],
+        urlImagen: `https://www.gravatar.com/avatar/${input.correo}?d=identicon`,
+        productos: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        usucreAt: decodedToken.id,
+        usuactAt: decodedToken.id,
+      };
+
+      const { insertedId } = await db
+        .collection('empresas')
+        .insertOne(nuevaEmpresa);
+
+      // 6. Descontar créditos del usuario y actualizarlo en la base de datos
+      await db.collection('usuarios').updateOne(
+        { _id: new ObjectId(decodedToken.id) },
+        {
+          $inc: { creditos: -5 },
+          $push: { empresas: insertedId }, // Agregar el ID de la nueva empresa al campo `empresas` del usuario
+        },
+      );
+
+      console.log(
+        'Empresa creada',
+        await db
+          .collection('empresas')
+          .findOne({ _id: new ObjectId(insertedId) }),
+      );
+
+      // 7. Retornar la información de la nueva empresa creada
+      return await db
+        .collection('empresas')
+        .findOne({ _id: new ObjectId(insertedId) });
+    },
+    actualizarEmpresa: async (
+      _,
+      { id, input, usuariosEliminados },
+      { db, token },
+    ) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const { rol, id: userId } = token;
+
+      // Verificar permisos del SUPER_ADMIN o ADMIN con rol en la empresa
+      if (rol === 'SUPER_ADMIN') {
+        // SUPER_ADMIN tiene acceso completo sin restricciones
+      } else if (rol === 'ADMIN') {
+        // Verificar si el usuario es ADMINEMPRESA en esta empresa
+        const empresa = await db.collection('empresas').findOne({
+          _id: new ObjectId(id),
+          usuarios: {
+            $elemMatch: {
+              usuarioId: new ObjectId(userId),
+              cargo: 'ADMINEMPRESA',
+            },
+          },
+        });
+
+        if (!empresa) {
+          throw new Error(
+            'No tienes permisos suficientes para actualizar esta empresa',
+          );
+        }
+      } else {
+        throw new Error('No tienes permisos para realizar esta acción');
+      }
+
+      // Actualizar la información de la empresa
+      const result = await db
+        .collection('empresas')
+        .updateOne({ _id: new ObjectId(id) }, { $set: input });
+
+      if (!result.matchedCount) {
+        throw new Error('No se pudo actualizar la empresa');
+      }
+
+      // Procesar eliminación de usuarios si `usuariosEliminados` no está vacío
+      if (usuariosEliminados.length > 0) {
+        // Obtener la empresa para verificar usuarios asociados
+        const empresa = await db
+          .collection('empresas')
+          .findOne({ _id: new ObjectId(id) });
+
+        if (!empresa) {
+          throw new Error('Empresa no encontrada');
+        }
+
+        // Filtrar los usuarios que realmente están asociados a la empresa
+        const usuariosAsociados = empresa.usuarios.map(
+          (user: { usuarioId: { toString: () => any } }) =>
+            user.usuarioId.toString(),
+        );
+        const usuariosAEliminar = usuariosEliminados.filter((usuarioId: any) =>
+          usuariosAsociados.includes(usuarioId),
+        );
+
+        if (usuariosAEliminar.length > 0) {
+          // Eliminar los usuarios de la lista de usuarios de la empresa
+          await db.collection('empresas').updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $pull: {
+                usuarios: {
+                  usuarioId: {
+                    $in: usuariosAEliminar.map(
+                      (id: number) => new ObjectId(id),
+                    ),
+                  },
+                },
+              },
+            },
+          );
+        } else {
+          throw new Error(
+            'Ninguno de los usuarios especificados está asociado a esta empresa',
+          );
+        }
+      }
+
+      console.log(
+        'Empresa actualizada',
+        await db.collection('empresas').findOne({ _id: new ObjectId(id) }),
+      );
+
+      // Retornar la empresa actualizada
+      return await db.collection('empresas').findOne({ _id: new ObjectId(id) });
     },
   },
 };

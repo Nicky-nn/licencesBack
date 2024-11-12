@@ -252,23 +252,71 @@ const userResolvers: IResolvers = {
   },
   Mutation: {
     login: async (_, { email, password }, { db }) => {
-      const usuario = await db.collection('usuarios').findOne({ email });
-      if (!usuario) {
+      // Find user in database
+      const usuarioDB = await db.collection('usuarios').findOne({ email });
+
+      if (!usuarioDB) {
         throw new Error('Usuario no encontrado');
       }
-      if (usuario.estado !== 'ACTIVO') {
+
+      if (usuarioDB.estado !== 'ACTIVO') {
         throw new Error('Usuario inactivo, No se confirmó el código OTP');
       }
-      const isValid = await bcrypt.compare(password, usuario.password);
+
+      // Verify password
+      const isValid = await bcrypt.compare(password, usuarioDB.password);
       if (!isValid) {
         throw new Error('Contraseña incorrecta');
       }
+
+      // Generate JWT token
       const token = jwt.sign(
-        { id: usuario._id, rol: usuario.rol },
+        { id: usuarioDB._id, rol: usuarioDB.rol },
         env.JWT_SECRET,
         { expiresIn: '1d' },
       );
-      return { token, usuario };
+
+      // Transform MongoDB document to match GraphQL Usuario type
+      const usuario = {
+        id: usuarioDB._id.toString(), // Convert ObjectId to string
+        urlImagen: usuarioDB.urlImagen || null,
+        nombre: usuarioDB.nombre,
+        apellido: usuarioDB.apellido,
+        email: usuarioDB.email,
+        password: usuarioDB.password,
+        telefono: usuarioDB.telefono || null,
+        rol: usuarioDB.rol,
+        estado: usuarioDB.estado,
+        creditos: usuarioDB.creditos,
+        // Transform empresas array to match schema
+        empresas: usuarioDB.empresas
+          ? await Promise.all(
+              usuarioDB.empresas.map(async (empresaId) => {
+                const empresa = await db
+                  .collection('empresas')
+                  .findOne({ _id: empresaId });
+                if (!empresa) return null;
+                // retornamos todo igual a excepcion de los ObjectId que los convertimos a string
+                return {
+                  ...empresa,
+                  _id: empresa._id.toString(),
+                  usuarios: empresa.usuarios.map((u: any) => ({
+                    usuario: u.usuario.toString(),
+                    cargo: u.cargo,
+                  })),
+                };
+              }),
+            )
+          : [],
+        productos: usuarioDB.productos || [],
+      };
+
+      console.log('Token generado:', token, 'para el usuario:', usuario);
+
+      return {
+        token,
+        usuario,
+      };
     },
     // SOLO UN SUPERADMIN PUEDE CREAR OTRO SUPERADMIN y ADMIN, por defcto el rol es ADMIN
 

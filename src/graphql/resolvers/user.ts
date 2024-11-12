@@ -556,13 +556,6 @@ const userResolvers: IResolvers = {
         },
       );
 
-      console.log(
-        'Empresa creada',
-        await db
-          .collection('empresas')
-          .findOne({ _id: new ObjectId(insertedId) }),
-      );
-
       // 7. Retornar la información de la nueva empresa creada
       return await db
         .collection('empresas')
@@ -570,26 +563,25 @@ const userResolvers: IResolvers = {
     },
     actualizarEmpresa: async (
       _,
-      { id, input, usuariosEliminados },
+      { id, input, usuariosEliminados = [] },
       { db, token },
     ) => {
       if (!token) {
         throw new Error('No se proporcionó el token de autorización');
       }
-
-      const { rol, id: userId } = token;
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
 
       // Verificar permisos del SUPER_ADMIN o ADMIN con rol en la empresa
       if (rol === 'SUPER_ADMIN') {
         // SUPER_ADMIN tiene acceso completo sin restricciones
       } else if (rol === 'ADMIN') {
-        // Verificar si el usuario es ADMINEMPRESA en esta empresa
         const empresa = await db.collection('empresas').findOne({
           _id: new ObjectId(id),
           usuarios: {
             $elemMatch: {
-              usuarioId: new ObjectId(userId),
-              cargo: 'ADMINEMPRESA',
+              usuario: userId,
+              cargo: 'ADMIN_EMPRESA',
             },
           },
         });
@@ -603,18 +595,19 @@ const userResolvers: IResolvers = {
         throw new Error('No tienes permisos para realizar esta acción');
       }
 
-      // Actualizar la información de la empresa
-      const result = await db
-        .collection('empresas')
-        .updateOne({ _id: new ObjectId(id) }, { $set: input });
+      // Actualizar la información de la empresa si hay input
+      if (Object.keys(input).length > 0) {
+        const result = await db
+          .collection('empresas')
+          .updateOne({ _id: new ObjectId(id) }, { $set: input });
 
-      if (!result.matchedCount) {
-        throw new Error('No se pudo actualizar la empresa');
+        if (!result.matchedCount) {
+          throw new Error('No se pudo actualizar la empresa');
+        }
       }
 
-      // Procesar eliminación de usuarios si `usuariosEliminados` no está vacío
+      // Procesar eliminación de usuarios
       if (usuariosEliminados.length > 0) {
-        // Obtener la empresa para verificar usuarios asociados
         const empresa = await db
           .collection('empresas')
           .findOne({ _id: new ObjectId(id) });
@@ -623,31 +616,35 @@ const userResolvers: IResolvers = {
           throw new Error('Empresa no encontrada');
         }
 
-        // Filtrar los usuarios que realmente están asociados a la empresa
+        if (!empresa.usuarios || !Array.isArray(empresa.usuarios)) {
+          empresa.usuarios = [];
+        }
+
+        // Convertir los IDs de usuarios asociados a strings para comparación
         const usuariosAsociados = empresa.usuarios.map(
-          (user: { usuarioId: { toString: () => any } }) =>
-            user.usuarioId.toString(),
+          (user: { usuario: any }) => user.usuario,
         );
+
         const usuariosAEliminar = usuariosEliminados.filter((usuarioId: any) =>
           usuariosAsociados.includes(usuarioId),
         );
 
         if (usuariosAEliminar.length > 0) {
-          // Eliminar los usuarios de la lista de usuarios de la empresa
-          await db.collection('empresas').updateOne(
+          // Modificación principal: Cambio en la estructura del $pull
+          const updateResult = await db.collection('empresas').updateOne(
             { _id: new ObjectId(id) },
             {
               $pull: {
                 usuarios: {
-                  usuarioId: {
-                    $in: usuariosAEliminar.map(
-                      (id: number) => new ObjectId(id),
-                    ),
-                  },
+                  usuario: { $in: usuariosAEliminar }, // Ya no convertimos a ObjectId
                 },
               },
             },
           );
+
+          if (!updateResult.modifiedCount) {
+            throw new Error('No se pudieron eliminar los usuarios');
+          }
         } else {
           throw new Error(
             'Ninguno de los usuarios especificados está asociado a esta empresa',
@@ -655,13 +652,15 @@ const userResolvers: IResolvers = {
         }
       }
 
-      console.log(
-        'Empresa actualizada',
-        await db.collection('empresas').findOne({ _id: new ObjectId(id) }),
-      );
+      // Obtener y retornar la empresa actualizada
+      const empresaActualizada = await db
+        .collection('empresas')
+        .findOne({ _id: new ObjectId(id) });
 
-      // Retornar la empresa actualizada
-      return await db.collection('empresas').findOne({ _id: new ObjectId(id) });
+      if (!empresaActualizada) {
+        throw new Error('No se pudo obtener la empresa actualizada');
+      }
+      return empresaActualizada;
     },
   },
 };

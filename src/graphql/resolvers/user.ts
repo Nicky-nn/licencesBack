@@ -218,6 +218,44 @@ const userResolvers: IResolvers = {
       }
       return th;
     },
+    listarInvitacionesUsuario: async (_, __, { db, token }) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
+
+      try {
+        // Si el usuario es SUPER_ADMIN, devolver todas las invitaciones
+        if (rol === 'SUPER_ADMIN') {
+          const invitaciones = await db
+            .collection('invitaciones')
+            .find()
+            .toArray();
+          return invitaciones;
+        }
+
+        // Si el usuario es ADMIN, devolver solo sus invitaciones
+        if (rol === 'ADMIN') {
+          const invitacionesUsuario = await db
+            .collection('invitaciones')
+            .find({ usuarioInvitado: userId }) // Filtrar invitaciones dirigidas al usuario ADMIN
+            .toArray();
+          return invitacionesUsuario.map((invitacion: any) => ({
+            ...invitacion,
+            id: invitacion._id.toString(),
+          }));
+        }
+
+        // Para otros roles, lanzar un error de permisos
+        throw new Error('No tienes permisos para ver las invitaciones');
+      } catch (error) {
+        console.error('Error al listar invitaciones:', error);
+        throw new Error('Error al obtener las invitaciones');
+      }
+    },
+
     // listaremos productos segun usuario y si el usuario pertenece a una empresa igual se listaran los productos de la empresa
     listarProductos: async (
       _,
@@ -291,7 +329,7 @@ const userResolvers: IResolvers = {
         // Transform empresas array to match schema
         empresas: usuarioDB.empresas
           ? await Promise.all(
-              usuarioDB.empresas.map(async (empresaId) => {
+              usuarioDB.empresas.map(async (empresaId: any) => {
                 const empresa = await db
                   .collection('empresas')
                   .findOne({ _id: empresaId });
@@ -318,8 +356,6 @@ const userResolvers: IResolvers = {
         usuario,
       };
     },
-    // SOLO UN SUPERADMIN PUEDE CREAR OTRO SUPERADMIN y ADMIN, por defcto el rol es ADMIN
-
     crearAdministrador: async (_, { input }, { db, token }) => {
       // Si el rol es SUPER_ADMIN, se requiere un token para validar el rol
       if (input.rol === 'ADMIN' || input.rol === 'CLIENTE') {
@@ -659,6 +695,7 @@ const userResolvers: IResolvers = {
       }
 
       // Procesar eliminación de usuarios
+      // Modificar la sección de eliminación de usuarios en actualizarEmpresa
       if (usuariosEliminados.length > 0) {
         const empresa = await db
           .collection('empresas')
@@ -668,39 +705,34 @@ const userResolvers: IResolvers = {
           throw new Error('Empresa no encontrada');
         }
 
-        if (!empresa.usuarios || !Array.isArray(empresa.usuarios)) {
-          empresa.usuarios = [];
-        }
-
-        // Convertir los IDs de usuarios asociados a strings para comparación
-        const usuariosAsociados = empresa.usuarios.map(
-          (user: { usuario: any }) => user.usuario,
-        );
-
-        const usuariosAEliminar = usuariosEliminados.filter((usuarioId: any) =>
-          usuariosAsociados.includes(usuarioId),
-        );
-
-        if (usuariosAEliminar.length > 0) {
-          // Modificación principal: Cambio en la estructura del $pull
-          const updateResult = await db.collection('empresas').updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $pull: {
-                usuarios: {
-                  usuario: { $in: usuariosAEliminar }, // Ya no convertimos a ObjectId
-                },
+        // Actualizar la empresa eliminando los usuarios
+        const updateResult = await db.collection('empresas').updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $pull: {
+              usuarios: {
+                usuario: { $in: usuariosEliminados },
               },
             },
-          );
+          },
+        );
 
-          if (!updateResult.modifiedCount) {
-            throw new Error('No se pudieron eliminar los usuarios');
-          }
-        } else {
-          throw new Error(
-            'Ninguno de los usuarios especificados está asociado a esta empresa',
-          );
+        // También actualizar los usuarios eliminados para quitar la referencia a la empresa
+        await db.collection('usuarios').updateMany(
+          {
+            _id: {
+              $in: usuariosEliminados.map((id: number) => new ObjectId(id)),
+            },
+          },
+          {
+            $pull: {
+              empresas: new ObjectId(id),
+            },
+          },
+        );
+
+        if (!updateResult.modifiedCount) {
+          throw new Error('No se pudieron eliminar los usuarios');
         }
       }
 
@@ -886,7 +918,7 @@ const userResolvers: IResolvers = {
           };
         }
 
-        // 6. Crear la invitación
+        // 6. Crear la invitación y almacenar el usuario invitado
         const nuevaInvitacion = {
           _id: new ObjectId(),
           email,
@@ -897,6 +929,7 @@ const userResolvers: IResolvers = {
           estado: 'PENDIENTE',
           fechaCreacion: new Date(),
           usuarioInvitante: userId,
+          usuarioInvitado: usuarioInvitado._id.toString(), // Aquí se almacena el ID del usuario invitado
         };
 
         await db.collection('invitaciones').insertOne(nuevaInvitacion);
@@ -934,6 +967,118 @@ const userResolvers: IResolvers = {
         };
       }
     },
+    aceptarInvitacionEmpresa: async (_, { id }, { db, token }) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
+
+      // 1. Verificar si la invitación existe y está pendiente
+      const invitacion = await db
+        .collection('invitaciones')
+        .findOne({ _id: new ObjectId(id), estado: 'PENDIENTE' });
+
+      if (!invitacion) {
+        throw new Error('Invitación no encontrada o ya fue aceptada/rechazada');
+      }
+
+      // 2. Verificar si el usuario existe
+      const usuario = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(userId) });
+
+      if (!usuario) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // 3. Verificar si el usuario ya es miembro de la empresa
+      const empresa = await db
+        .collection('empresas')
+        .findOne({ _id: invitacion.empresa._id });
+
+      if (!empresa) {
+        throw new Error('Empresa no encontrada');
+      }
+
+      const yaEsMiembro = empresa.usuarios.some(
+        (u: { usuario: string }) => u.usuario === userId,
+      );
+      if (yaEsMiembro) {
+        throw new Error('El usuario ya es miembro de esta empresa');
+      }
+
+      // 4. Actualizar la empresa con el nuevo usuario
+      await db.collection('empresas').updateOne(
+        { _id: invitacion.empresa._id },
+        {
+          $push: {
+            usuarios: {
+              usuario: userId,
+              cargo: 'EMPLEADO',
+            },
+          },
+        },
+      );
+
+      // 5. Actualizar el usuario con la nueva empresa
+      await db.collection('usuarios').updateOne(
+        { _id: new ObjectId(userId) },
+        {
+          $push: { empresas: invitacion.empresa._id },
+        },
+      );
+
+      // 6. Actualizar la invitación a "ACEPTADA"
+      await db.collection('invitaciones').updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: { estado: 'ACEPTADA' },
+        },
+      );
+
+      return true;
+    },
+
+    rechazarInvitacionEmpresa: async (_, { id }, { db, token }) => {
+      if (!token) {
+        throw new Error('No se proporcionó el token de autorización');
+      }
+
+      const decodedToken = verifyToken(token);
+      const { rol, id: userId } = decodedToken;
+
+      // 1. Verificar si la invitación existe y está pendiente
+      const invitacion = await db
+        .collection('invitaciones')
+        .findOne({ _id: new ObjectId(id), estado: 'PENDIENTE' });
+
+      if (!invitacion) {
+        throw new Error('Invitación no encontrada o ya fue aceptada/rechazada');
+      }
+
+      // 2. Verificar si el usuario existe
+      const usuario = await db
+        .collection('usuarios')
+        .findOne({ _id: new ObjectId(userId) });
+
+      if (!usuario) {
+        throw new Error('Usuario no encontrado');
+      }
+
+      // 3. Actualizar la invitación a "RECHAZADA"
+      await db.collection('invitaciones').updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: { estado: 'RECHAZADA' },
+        },
+      );
+
+      return true;
+    },
+
+    // listar initaiones el super admin puede ver todas y el admin solo las de su empresa
   },
   Subscription: {
     notificacionRecibida: {

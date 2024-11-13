@@ -251,6 +251,7 @@ type Query {
     reverse: Boolean = false
   ): [Producto!]! @auth
   obtenerProducto(id: ID!): Producto @auth
+  listarInvitacionesUsuario: [InvitacionEmpresa!]! @auth
   listarProductosPorCliente(clienteId: ID!): [Producto!]! @auth
   listarProductosPorEmpresa(empresaId: ID!): [Producto!]! @auth
   misProductos: [Producto!]! @auth
@@ -282,6 +283,8 @@ type Mutation {
     email: String!
     empresaId: ID!
   ): InvitacionEmpresaResponse @auth
+  aceptarInvitacionEmpresa(id: ID!): Boolean @auth
+  rechazarInvitacionEmpresa(id: ID!): Boolean @auth
   crearProducto(input: CrearProductoInput!): Producto @auth
   actualizarProducto(id: ID!, input: ActualizarProductoInput!): Producto @auth
   eliminarProducto(id: ID!): Boolean @auth

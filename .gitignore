@@ -29,3 +29,6 @@ Thumbs.db
 
 structure.sh
 pnpm-lock.yaml
+
+# Archivos Storage S3 
+uploads

@@ -7,6 +7,10 @@ import { env } from '../../config/env';
 import { generateOTP, verifyOTP, saveOTP } from '../../services/otp';
 import { sendWhatsAppMessage } from '../../services/whatsapp';
 import { PubSub, withFilter } from 'graphql-subscriptions';
+import { createWriteStream } from 'fs';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
 
 interface JwtPayload {
   id: string;
@@ -21,6 +25,10 @@ interface QueryParams {
 
 const NOTIFICACION_CHANNEL = 'NOTIFICACIONES';
 const pubsub = new PubSub();
+
+const generarHash = async (password: string) => {
+  return await bcrypt.hash(password, 10);
+};
 
 const verifyToken = (token: string): JwtPayload => {
   if (!token) {
@@ -1040,7 +1048,6 @@ const userResolvers: IResolvers = {
 
       return true;
     },
-
     rechazarInvitacionEmpresa: async (_, { id }, { db, token }) => {
       if (!token) {
         throw new Error('No se proporcionó el token de autorización');
@@ -1078,7 +1085,539 @@ const userResolvers: IResolvers = {
       return true;
     },
 
-    // listar initaiones el super admin puede ver todas y el admin solo las de su empresa
+    crearProducto: async (_, { input }, { db, token }) => {
+      if (!token) throw new Error('No se proporcionó el token de autorización');
+
+      const decodedToken = verifyToken(token);
+      if (!['ADMIN', 'SUPER_ADMIN'].includes(decodedToken.rol)) {
+        throw new Error('No tienes permisos para crear productos');
+      }
+
+      const productoId = new ObjectId();
+      let imagenUrl = null;
+
+      try {
+        // Validación de la empresa y pertenencia del usuario
+        let empresa = null;
+        if (input.empresaId) {
+          empresa = await db
+            .collection('empresas')
+            .findOne({ _id: new ObjectId(input.empresaId) });
+
+          if (!empresa) {
+            throw new Error('La empresa especificada no existe');
+          }
+
+          // Verificar si el usuario pertenece a la empresa
+          const usuarioEnEmpresa = empresa.usuarios.some(
+            (u: any) => u.usuario === decodedToken.id,
+          );
+
+          if (!usuarioEnEmpresa) {
+            throw new Error(
+              'No tienes permisos para crear productos en esta empresa',
+            );
+          }
+        }
+
+        // Procesar imagen si existe
+        if (input.imagen) {
+          const { createReadStream, filename } = await input.imagen;
+          const extension = path.extname(filename);
+          const nombreArchivo = `${productoId}-${Date.now()}${extension}`;
+          const rutaImagen = path.join(
+            __dirname,
+            '../uploads/productos',
+            nombreArchivo,
+          );
+
+          await new Promise((resolve, reject) => {
+            createReadStream()
+              .pipe(fs.createWriteStream(rutaImagen))
+              .on('finish', resolve)
+              .on('error', reject);
+          });
+
+          imagenUrl = `/uploads/productos/${nombreArchivo}`;
+        }
+
+        // Crear el nuevo producto con campos iniciales
+        const nuevoProducto = {
+          _id: productoId,
+          id: productoId.toString(),
+          nombre: input.nombre,
+          imagen: imagenUrl,
+          plataforma: input.plataforma,
+          versiones: [] as any[],
+          usuarios: [] as ObjectId[],
+          empresa: input.empresaId ? new ObjectId(input.empresaId) : null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          usucreAt: decodedToken.id,
+          usuactAt: decodedToken.id,
+        };
+
+        // Preparación de usuarios
+        if (input.empresaId) {
+          // Si hay empresa, solo incluir usuarios adicionales que no estén en la empresa
+          const usuariosEmpresa = new Set(
+            empresa.usuarios.map((u: any) => u.usuario),
+          );
+          const usuariosAdicionales = input.usuarioId.filter(
+            (id: string) => !usuariosEmpresa.has(id),
+          );
+          nuevoProducto.usuarios = usuariosAdicionales.map(
+            (id: string) => new ObjectId(id),
+          );
+        } else {
+          // Si no hay empresa, incluir el usuario creador y los adicionales
+          const usuariosUnicos = new Set([decodedToken.id, ...input.usuarioId]);
+          nuevoProducto.usuarios = Array.from(usuariosUnicos).map(
+            (id: string) => new ObjectId(id),
+          );
+        }
+
+        // Crear versión del producto y calcular hash para validar unicidad
+        const versionId = new ObjectId();
+        const { createReadStream: versionStream, filename: versionFilename } =
+          await input.version.archivo;
+        const hash = await calcularHashArchivo(versionStream());
+
+        // Verificar que el hash no exista en otras versiones
+        const versionExistente = await db
+          .collection('versiones')
+          .findOne({ hash });
+        // if (versionExistente) {
+        //   throw new Error('Este archivo ya existe como una versión previa.');
+        // }
+
+        // Verificar que el número de versión no esté duplicado para el mismo producto
+        const versionDuplicada = await db.collection('versiones').findOne({
+          producto: productoId,
+          numeroVersion: input.version.numeroVersion,
+        });
+        // if (versionDuplicada) {
+        //   throw new Error(
+        //     'Este número de versión ya existe para este producto.',
+        //   );
+        // }
+
+        // Guardar archivo de la versión
+        const versionPath = path.join(
+          __dirname,
+          `../uploads/productos/${productoId}`,
+        );
+        await fs.promises.mkdir(versionPath, { recursive: true });
+        const rutaArchivo = path.join(versionPath, versionFilename);
+
+        await new Promise((resolve, reject) => {
+          versionStream()
+            .pipe(fs.createWriteStream(rutaArchivo))
+            .on('finish', resolve)
+            .on('error', reject);
+        });
+
+        const nuevaVersion = {
+          _id: versionId,
+          id: versionId.toString(),
+          numeroVersion: input.version.numeroVersion,
+          archivo: rutaArchivo,
+          hash,
+          tamanioArchivo: (await fs.promises.stat(rutaArchivo)).size,
+          tipoArchivo: path.extname(versionFilename),
+          cambios: input.version.cambios,
+          estado: 'ACTIVA',
+          producto: productoId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          usucreAt: decodedToken.id,
+          usuactAt: decodedToken.id,
+        };
+
+        const licencias = input.licencias.map((licencia: any) => ({
+          _id: new ObjectId(),
+          id: new ObjectId().toString(),
+          ...licencia,
+          codigoActivacion: generateLicenseCode(),
+          estado: 'ACTIVA',
+          conexionesActivas: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }));
+
+        const session = db.client.startSession();
+        try {
+          await session.withTransaction(async () => {
+            await db.collection('productos').insertOne(nuevoProducto);
+            await db.collection('versiones').insertOne(nuevaVersion);
+            if (licencias.length > 0) {
+              await db.collection('licencias').insertMany(licencias);
+            }
+
+            // Si se especifica una empresa, agregar el producto en la empresa
+            if (input.empresaId) {
+              await db
+                .collection('empresas')
+                .updateOne(
+                  { _id: new ObjectId(input.empresaId) },
+                  { $push: { productos: productoId } },
+                );
+            }
+
+            // Registrar el producto en cada usuario asociado individualmente
+            for (const usuarioId of nuevoProducto.usuarios) {
+              await db
+                .collection('usuarios')
+                .updateOne(
+                  { _id: usuarioId },
+                  { $push: { productos: productoId } },
+                );
+            }
+          });
+
+          // Obtener los usuarios completos para el campo usuario
+          const usuarios = await db
+            .collection('usuarios')
+            .find({ _id: { $in: nuevoProducto.usuarios } })
+            .toArray();
+
+          // Construir la respuesta según el schema
+          const productResponse = {
+            id: nuevoProducto.id,
+            nombre: nuevoProducto.nombre,
+            imagen: nuevoProducto.imagen,
+            plataforma: nuevoProducto.plataforma,
+            // Si hay empresa, incluir la estructura UsuarioEnProducto
+            empresa: input.empresaId
+              ? [
+                  {
+                    usuario: empresa.usuarios[0].usuario, // Primer usuario de la empresa
+                    cargo: 'ADMIN_PRODUCTO',
+                  },
+                ]
+              : null,
+            usuario: nuevoProducto.usuarios.map((id) => id.toString()),
+            versiones: [nuevaVersion],
+            versionActual: nuevaVersion,
+            licencias: licencias.map(
+              (licencia: {
+                id: any;
+                email: any;
+                maxConexiones: any;
+                conexionesActivas: any;
+                estado: any;
+                codigoActivacion: any;
+                fechaVencimiento: any;
+                reglas: any;
+                createdAt: any;
+                updatedAt: any;
+              }) => ({
+                id: licencia.id,
+                email: licencia.email,
+                maxConexiones: licencia.maxConexiones,
+                conexionesActivas: licencia.conexionesActivas,
+                estado: licencia.estado,
+                codigoActivacion: licencia.codigoActivacion,
+                fechaActivacion: null,
+                fechaVencimiento: licencia.fechaVencimiento,
+                reglas: licencia.reglas,
+                createdAt: licencia.createdAt,
+                updatedAt: licencia.updatedAt,
+              }),
+            ),
+            createdAt: nuevoProducto.createdAt,
+            updatedAt: nuevoProducto.updatedAt,
+            usucreAt: nuevoProducto.usucreAt,
+            usuactAt: nuevoProducto.usuactAt,
+          };
+
+          return productResponse;
+        } finally {
+          await session.endSession();
+        }
+      } catch (error) {
+        throw new Error(`Error al crear producto: ${(error as Error).message}`);
+      }
+    },
+    actualizarProducto: async (
+      _,
+      { id, input, usuariosEliminados, empresaEliminada },
+      { db, token },
+    ) => {
+      if (!token) throw new Error('No se proporcionó el token de autorización');
+
+      const decodedToken = verifyToken(token);
+      const productoId = new ObjectId(id);
+
+      // Obtener el producto actual
+      const productoActual = await db
+        .collection('productos')
+        .findOne({ _id: productoId });
+      if (!productoActual) {
+        throw new Error('Producto no encontrado');
+      }
+
+      // Verificar si el usuario tiene permisos para actualizar el producto
+      const tienePermiso =
+        ['ADMIN', 'SUPER_ADMIN'].includes(decodedToken.rol) ||
+        productoActual.usucreAt === decodedToken.id;
+      if (!tienePermiso) {
+        throw new Error('No tienes permisos para actualizar este producto');
+      }
+
+      try {
+        const session = db.client.startSession();
+        await session.withTransaction(async () => {
+          // 1. Primero manejamos los campos básicos
+          const actualizacionBasica: any = {
+            $set: {
+              updatedAt: new Date().toISOString(),
+              usuactAt: decodedToken.id,
+            },
+          };
+
+          if (input.nombre) actualizacionBasica.$set.nombre = input.nombre;
+          if (input.plataforma)
+            actualizacionBasica.$set.plataforma = input.plataforma;
+
+          // 2. Procesar imagen si existe
+          if (input.imagen) {
+            const { createReadStream, filename } = await input.imagen;
+            const extension = path.extname(filename);
+            const nombreArchivo = `${productoId}-${Date.now()}${extension}`;
+            const rutaImagen = path.join(
+              __dirname,
+              '../uploads/productos',
+              nombreArchivo,
+            );
+
+            await new Promise((resolve, reject) => {
+              createReadStream()
+                .pipe(fs.createWriteStream(rutaImagen))
+                .on('finish', resolve)
+                .on('error', reject);
+            });
+
+            actualizacionBasica.$set.imagen = `/uploads/productos/${nombreArchivo}`;
+
+            if (productoActual.imagen) {
+              const rutaAnterior = path.join(
+                __dirname,
+                '..',
+                productoActual.imagen,
+              );
+              await fs.promises.unlink(rutaAnterior).catch(() => {});
+            }
+          }
+
+          // 3. Manejar empresa si es necesario
+          if (empresaEliminada && productoActual.empresa) {
+            const empresa = await db
+              .collection('empresas')
+              .findOne({ _id: productoActual.empresa });
+            const esAdminEmpresa = empresa.usuarios.some(
+              (u: any) => u.usuario === decodedToken.id && u.rol === 'ADMIN',
+            );
+
+            if (
+              !esAdminEmpresa &&
+              productoActual.usucreAt !== decodedToken.id
+            ) {
+              throw new Error('No tienes permisos para desvincular la empresa');
+            }
+
+            await db
+              .collection('empresas')
+              .updateOne(
+                { _id: productoActual.empresa },
+                { $pull: { productos: productoId } },
+              );
+
+            actualizacionBasica.$set.empresa = null;
+          } else if (input.empresaId) {
+            const nuevaEmpresa = await db.collection('empresas').findOne({
+              _id: new ObjectId(input.empresaId),
+            });
+
+            if (!nuevaEmpresa) {
+              throw new Error('La empresa especificada no existe');
+            }
+
+            actualizacionBasica.$set.empresa = new ObjectId(input.empresaId);
+          }
+
+          // Aplicar actualizaciones básicas primero
+          await db
+            .collection('productos')
+            .updateOne({ _id: productoId }, actualizacionBasica);
+
+          // 4. Manejar eliminación de usuarios
+          if (usuariosEliminados && usuariosEliminados.length > 0) {
+            if (productoActual.usucreAt !== decodedToken.id) {
+              throw new Error(
+                'Solo el creador del producto puede eliminar usuarios',
+              );
+            }
+
+            const usuariosAEliminar = usuariosEliminados.map(
+              (id: number) => new ObjectId(id),
+            );
+
+            // Verificar auto-eliminación del creador
+            const creadorSeAutoElimina = usuariosAEliminar.some(
+              (id: { toString: () => any }) =>
+                id.toString() === productoActual.usucreAt,
+            );
+
+            if (creadorSeAutoElimina) {
+              // Obtener lista actual de usuarios después de las posibles actualizaciones
+              const productoActualizado = await db
+                .collection('productos')
+                .findOne({ _id: productoId });
+              const usuariosRestantes = productoActualizado.usuarios.filter(
+                (userId: any) =>
+                  !usuariosAEliminar.some(
+                    (elimId: { equals: (arg0: any) => any }) =>
+                      elimId.equals(userId),
+                  ),
+              );
+
+              if (usuariosRestantes.length === 0) {
+                throw new Error(
+                  'No puedes eliminarte como creador si no hay otros usuarios',
+                );
+              }
+
+              if (!input.nuevoCreadorId) {
+                throw new Error(
+                  'Debes especificar un nuevo creador antes de eliminarte',
+                );
+              }
+
+              const nuevoCreadorObjectId = new ObjectId(input.nuevoCreadorId);
+              if (
+                !usuariosRestantes.some(
+                  (id: { equals: (arg0: ObjectId) => any }) =>
+                    id.equals(nuevoCreadorObjectId),
+                )
+              ) {
+                throw new Error(
+                  'El nuevo creador debe ser un usuario actual del producto',
+                );
+              }
+
+              // Actualizar el creador primero
+              await db
+                .collection('productos')
+                .updateOne(
+                  { _id: productoId },
+                  { $set: { usucreAt: input.nuevoCreadorId } },
+                );
+            }
+
+            // Eliminar usuarios en una operación separada
+            await db
+              .collection('productos')
+              .updateOne(
+                { _id: productoId },
+                { $pull: { usuarios: { $in: usuariosAEliminar } } },
+              );
+
+            // Actualizar referencias en usuarios
+            await db
+              .collection('usuarios')
+              .updateMany(
+                { _id: { $in: usuariosAEliminar } },
+                { $pull: { productos: productoId } },
+              );
+          }
+
+          // 5. Agregar nuevos usuarios en una operación separada
+          if (input.usuarioId && input.usuarioId.length > 0) {
+            const nuevosUsuarios = input.usuarioId.map(
+              (id: number) => new ObjectId(id),
+            );
+
+            // Obtener lista actualizada de usuarios del producto
+            const productoActualizado = await db
+              .collection('productos')
+              .findOne({ _id: productoId });
+            const usuariosActuales = new Set(
+              productoActualizado.usuarios.map((id: { toString: () => any }) =>
+                id.toString(),
+              ),
+            );
+            const usuariosNuevos = nuevosUsuarios.filter(
+              (id: { toString: () => unknown }) =>
+                !usuariosActuales.has(id.toString()),
+            );
+
+            if (usuariosNuevos.length > 0) {
+              // Verificar que los usuarios existan
+              const usuariosExistentes = await db
+                .collection('usuarios')
+                .countDocuments({
+                  _id: { $in: usuariosNuevos },
+                });
+
+              if (usuariosExistentes !== usuariosNuevos.length) {
+                throw new Error('Uno o más usuarios especificados no existen');
+              }
+
+              // Agregar nuevos usuarios al producto
+              await db
+                .collection('productos')
+                .updateOne(
+                  { _id: productoId },
+                  { $addToSet: { usuarios: { $each: usuariosNuevos } } },
+                );
+
+              // Actualizar referencias en usuarios
+              await db
+                .collection('usuarios')
+                .updateMany(
+                  { _id: { $in: usuariosNuevos } },
+                  { $addToSet: { productos: productoId } },
+                );
+            }
+          }
+        });
+
+        // Obtener y retornar el producto actualizado
+        const productoActualizado = await db
+          .collection('productos')
+          .findOne({ _id: productoId });
+
+
+        const response = {
+          id: productoActualizado._id.toString(),
+          nombre: productoActualizado.nombre,
+          imagen: productoActualizado.imagen,
+          plataforma: productoActualizado.plataforma,
+          empresa: productoActualizado.empresa
+            ? {
+                id: productoActualizado.empresa.toString(),
+              }
+            : null,
+          usuario: productoActualizado.usuarios.map(
+            (id: { toString: () => any }) => id.toString(),
+          ),
+          historialCambios: productoActualizado.historialCambios,
+          versiones: productoActualizado.versiones,
+          createdAt: productoActualizado.createdAt,
+          updatedAt: productoActualizado.updatedAt,
+          usucreAt: productoActualizado.usucreAt,
+          usuactAt: productoActualizado.usuactAt,
+        };
+        console.log('Producto actualizado:', response);
+
+        return response;
+      } catch (error) {
+        throw new Error(
+          `Error al actualizar producto: ${(error as Error).message}`,
+        );
+      }
+    },
   },
   Subscription: {
     notificacionRecibida: {
@@ -1101,3 +1640,39 @@ const userResolvers: IResolvers = {
 };
 
 export default userResolvers;
+
+function generateLicenseCode() {
+  return (
+    Math.random().toString(36).substring(2, 15) +
+    Math.random().toString(36).substring(2, 15)
+  );
+}
+
+async function calcularHashArchivo(stream: {
+  on: (
+    arg0: string,
+    arg1: (data: any) => crypto.Hash,
+  ) => {
+    (): any;
+    new (): any;
+    on: {
+      (
+        arg0: string,
+        arg1: () => void,
+      ): {
+        (): any;
+        new (): any;
+        on: { (arg0: string, arg1: (reason?: any) => void): void; new (): any };
+      };
+      new (): any;
+    };
+  };
+}) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    stream
+      .on('data', (data: crypto.BinaryLike) => hash.update(data))
+      .on('end', () => resolve(hash.digest('hex')))
+      .on('error', reject);
+  });
+}

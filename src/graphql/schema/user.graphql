@@ -31,6 +31,11 @@ enum CargoEmpresa {
   EMPLEADO
 }
 
+enum CargoProducto {
+  ADMIN_PRODUCTO
+  EMPLEADO
+}
+
 type Empresa {
   _id: ID!
   nombre: String!
@@ -50,22 +55,95 @@ type UsuarioEnEmpresa {
   cargo: CargoEmpresa!
 }
 
+type UsuarioEnProducto {
+  usuario: Usuario!
+  cargo: CargoProducto!
+}
+
 type Producto {
   id: ID!
   nombre: String!
-  reglas: [String!]!
   imagen: String
-  clave: String!
-  version: String!
-  archivo: String
   plataforma: [Plataforma!]!
-  hash: String!
+  empresa: [UsuarioEnProducto]
+  usuario: [ID]
+  versiones: [Version!]!
+  versionActual: Version
+  licencias: [LicenciaProducto!]!
+  historialCambios: [CambioProducto!]! # Nuevo campo
+  createdAt: String!
+  updatedAt: String!
+  usucreAt: String!
+  usuactAt: String!
+}
+
+# Nuevo type para el historial
+type CambioProducto {
+  tipo: TipoCambioProducto!
+  creadorAnterior: ID
+  nuevoCreador: ID
+  fecha: String!
+  usuarioEjecutor: ID!
+}
+
+# Enum para los tipos de cambios
+enum TipoCambioProducto {
+  CAMBIO_CREADOR
+  # Puedes agregar más tipos de cambios en el futuro
+  # CAMBIO_EMPRESA
+  # ELIMINACION_USUARIO
+  # etc.
+}
+
+type LicenciaProducto {
+  id: ID!
+  email: String!
   maxConexiones: Int!
-  correoAsociado: String!
-  idUnico: String!
-  versionesAnteriores: [VersionProducto!]
-  clientes: [Cliente!]
-  empresa: Empresa
+  conexionesActivas: [ConexionActiva!]!
+  estado: EstadoLicencia!
+  codigoActivacion: String! # Generado automáticamente
+  fechaActivacion: String
+  fechaVencimiento: String
+  reglas: [String!]!
+  createdAt: String!
+  updatedAt: String!
+}
+
+type ConexionActiva {
+  id: ID!
+  ipAddress: String!
+  macAddress: String!
+  dispositivo: String
+  ultimaActividad: String!
+}
+
+type Version {
+  id: ID!
+  numeroVersion: String!
+  archivo: String
+  tamanioArchivo: Float
+  tipoArchivo: String
+  hash: String
+  cambios: String
+  estado: EstadoVersion
+  producto: Producto!
+  createdAt: String!
+  updatedAt: String!
+  usucreAt: String!
+  usuactAt: String!
+}
+
+enum EstadoLicencia {
+  ACTIVA
+  SUSPENDIDA
+  VENCIDA
+  CANCELADA
+}
+
+enum EstadoVersion {
+  ACTIVA
+  DEPRECATED
+  ARCHIVADA
 }
 
 enum Plataforma {
@@ -80,21 +158,6 @@ type VersionProducto {
   version: String!
   fechaCreacion: String!
   cambios: String
-}
-
-type Cliente {
-  id: ID!
-  email: String!
-  password: String!
-  productos: [Producto!]
-  dispositivos: [Dispositivo!]
-}
-
-type Dispositivo {
-  id: ID!
-  macAddress: String!
-  ipAddress: String!
-  ultimaConexion: String!
 }
 
 type Notificacion {
@@ -133,54 +196,45 @@ input ActualizarEmpresaInput {
   urlImagen: String
 }
 
+input ActualizarProductoInput {
+  nombre: String
+  imagen: Upload
+  plataforma: [Plataforma!]
+  empresaId: ID        # Cambiado de [ID] a ID ya que un producto solo puede pertenecer a una empresa
+  usuarioId: [ID!]     # Array de IDs de usuarios
+  nuevoCreadorId: ID
+}
+
 input EliminarUsuariosEmpresaInput {
   usuarios: [ID!]!
 }
 
 input CrearProductoInput {
   nombre: String!
-  reglas: [String!]!
   imagen: Upload
-  clave: String!
-  version: String!
-  archivo: Upload
   plataforma: [Plataforma!]!
-  maxConexiones: Int!
-  correoAsociado: String!
   empresaId: ID
+  usuarioId: [ID]
+  version: CrearVersionInput!
+  licencias: [CrearLicenciaInput!]!
 }
 
-input ActualizarProductoInput {
-  nombre: String
-  reglas: [String!]
-  imagen: Upload
-  clave: String
-  version: String
-  archivo: Upload
-  plataforma: [Plataforma!]
-  maxConexiones: Int
-  correoAsociado: String
+input CrearVersionInput {
+  numeroVersion: String!
+  archivo: Upload!
+  cambios: String!
 }
 
-input RegistrarClienteInput {
+input CrearLicenciaInput {
   email: String!
-  password: String!
-  productoId: ID!
-}
-
-input DispositivoInput {
-  macAddress: String!
-  ipAddress: String!
+  maxConexiones: Int!
+  fechaVencimiento: String
+  reglas: [String!]
 }
 
 type AuthResponse {
   token: String!
   usuario: Usuario!
-}
-
-type AuthClienteResponse {
-  token: String!
-  cliente: Cliente!
 }
 
 type InvitacionEmpresaResponse {
@@ -206,8 +260,6 @@ type VerificacionOTPResult {
   message: String!
   usuario: Usuario
 }
-
-
 
 type InvitacionProductoResponse {
   success: Boolean!
@@ -285,16 +337,22 @@ type Mutation {
   ): InvitacionEmpresaResponse @auth
   aceptarInvitacionEmpresa(id: ID!): Boolean @auth
   rechazarInvitacionEmpresa(id: ID!): Boolean @auth
+  # Producto
   crearProducto(input: CrearProductoInput!): Producto @auth
-  actualizarProducto(id: ID!, input: ActualizarProductoInput!): Producto @auth
+  actualizarProducto(
+    id: ID!
+    input: ActualizarProductoInput!
+    usuariosEliminados: [ID!]
+    empresaEliminada: Boolean
+  ): Producto @auth
   eliminarProducto(id: ID!): Boolean @auth
-  asociarProductoACliente(clienteId: ID!, productoId: ID!): Cliente @auth
+  asociarProductoACliente(clienteId: ID!, productoId: ID!): Boolean @auth
   invitarUsuarioAProducto(
     email: String!
     productoId: ID!
   ): InvitacionProductoResponse @auth
-  agregarDispositivo(dispositivoInput: DispositivoInput!): Cliente @auth
-  eliminarDispositivo(dispositivoId: ID!): Cliente @auth
+  aceptarInvitacionProducto(id: ID!): Boolean @auth
+  rechazarInvitacionProducto(id: ID!): Boolean @auth
   verificarCorreoProducto(productoId: ID!, email: String!): Boolean! @auth
   reducirCreditos(usuarioId: ID!, cantidad: Int!): Usuario @auth
   aumentarCreditos(usuarioId: ID!, cantidad: Int!): Usuario @auth
